@@ -1,0 +1,39 @@
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables (seguridad)
+.env
+.env.local
+.env.*.local
+
+# TypeScript build output (si aplica)
+dist/
+build/
+*.tsbuildinfo
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Lock files (paquete manager agnostic)
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
