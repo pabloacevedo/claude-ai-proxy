@@ -14,7 +14,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { Agent, Pool, Dispatcher } from 'undici'
+import { Agent, Pool } from 'undici'
 import { loadConfig } from './config.js'
 import { translateRequest } from './translators/requestTranslator.js'
 import {
@@ -165,6 +165,8 @@ function calculateRetryDelay(attempt: number, options: RetryOptions): number {
   const exponentialDelay = options.baseDelayMs * Math.pow(options.backoffMultiplier, attempt - 1)
   return Math.min(exponentialDelay, options.maxDelayMs)
 }
+
+const SHUTDOWN_TIMEOUT_MS = parseInt(process.env.SHUTDOWN_TIMEOUT_MS || '30000', 10)
 
 const config = loadConfig()
 
@@ -344,9 +346,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, reqStart
       }
 
       if (isStreaming) {
-        await handleStreamingResponse(targetRes, res, anthropicReq.model, requestTimeout, connectionTimeout, reqStart)
-      } else {
-        clearTimeout(requestTimeout)
+        await handleStreamingResponse(targetRes, res, anthropicReq.model, requestTimeout, reqStart)
+   } else {
         await handleNormalResponse(targetRes, res, anthropicReq.model, requestTimeout)
         const latencyMs = Date.now() - reqStart
         if (config.logRequests) asyncLog(`   ⏱  Latencia total: ${latencyMs}ms`)
@@ -385,11 +386,20 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, reqStart
       return
     }
   }
+
+  // Fallback defensivo: si el for-loop termina sin return (no debería pasar),
+  // enviar respuesta de error para no dejar al cliente colgado.
+  if (!res.headersSent) {
+    const errMsg = lastError?.message ?? 'All retry attempts exhausted'
+    asyncLogError(`❌ Todos los reintentos agotados (${retryOptions.maxRetries}): ${errMsg}`)
+    res.writeHead(502, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(buildErrorResponse(anthropicReq.model, `All ${retryOptions.maxRetries} attempts failed: ${errMsg}`)))
+  }
 }
 
 // ==========================================================
 // Respuesta normal (sin streaming)
-// ==========================================================
+// ===============================================
 
 async function handleNormalResponse(
   targetRes: any,
@@ -397,8 +407,9 @@ async function handleNormalResponse(
   requestModel: string,
   requestTimeout: ReturnType<typeof setTimeout>,
 ): Promise<void> {
+  // requestTimeout sigue activo para cubrir la lectura del body
   const body = await targetRes.body.text()
-  clearTimeout(requestTimeout)
+  clearTimeout(requestTimeout) // Limpiar una sola vez aquí, después de leer el body
 
   let openaiResp: OpenAIResponse
   try {
@@ -433,7 +444,6 @@ async function handleStreamingResponse(
   res: ServerResponse,
   requestModel: string,
   requestTimeout: ReturnType<typeof setTimeout>,
-  connectionTimeout: ReturnType<typeof setTimeout>,
   reqStart: number,
 ): Promise<void> {
   res.writeHead(200, {
@@ -450,21 +460,22 @@ async function handleStreamingResponse(
   let buffer = ''
   let chunkCount = 0
   let ttfbRecorded = false
+  let isStreamActive = true
+
+  let currentRequestTimeout = requestTimeout
 
   // Refrescar timeout mientras haya actividad
   const refreshTimeout = () => {
-    clearTimeout(requestTimeout)
-    // Solo refrescamos request timeout, connection ya está completada
+    // Limpiar el timer ACTIVO actual, no el parámetro original
+    clearTimeout(currentRequestTimeout)
     const newTimeout = setTimeout(() => {
-      asyncLogError(`❌ Request timeout después de ${config.requestTimeout}ms de inactividad en stream`)
-      if (!res.writableEnded) {
+      if (isStreamActive && !res.writableEnded) {
+        asyncLogError(`❌ Request timeout después de ${config.requestTimeout}ms de inactividad en stream`)
         res.end()
       }
     }, config.requestTimeout)
-    return newTimeout
+    currentRequestTimeout = newTimeout
   }
-
-  let currentRequestTimeout = requestTimeout
 
   try {
     for await (const chunk of reader) {
@@ -477,7 +488,7 @@ async function handleStreamingResponse(
       }
 
       // Refrescar timeout en cada chunk recibido
-      currentRequestTimeout = refreshTimeout()
+      refreshTimeout()
 
       try {
         buffer += decoder.decode(chunk, { stream: true })
@@ -488,7 +499,9 @@ async function handleStreamingResponse(
           const trimmed = line.trim()
 
           if (trimmed === 'data: [DONE]') {
-            continue
+            // El stream de OpenAI terminó, forzar cierre del bucle
+            isStreamActive = false
+            break
           }
 
           if (trimmed.startsWith('data: ')) {
@@ -515,15 +528,23 @@ async function handleStreamingResponse(
     }
   } catch (err) {
     // Error fatal leyendo el stream
-    asyncLogError(`❌ Error fatal leyendo stream después de ${chunkCount} chunks: ${err instanceof Error ? err.message : String(err)}`)
+    isStreamActive = false
+    const errMsg = err instanceof Error ? err.message : String(err)
+    asyncLogError(`❌ Error fatal leyendo stream después de ${chunkCount} chunks: ${errMsg}`)
     clearTimeout(currentRequestTimeout)
-    if (!res.headersSent) {
-      res.writeHead(502, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify(buildErrorResponse(requestModel, `Stream error: ${err instanceof Error ? err.message : String(err)}`)))
-      return
+    // Headers ya fueron enviados (writeHead 200 + SSE), así que
+    // enviamos un evento de error por SSE y cerramos el stream.
+    if (!res.writableEnded) {
+      try {
+        res.write(`event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'stream_error', message: errMsg } })}\n\n`)
+      } catch { /* ignore write errors during cleanup */ }
+      res.end()
     }
+    return
   }
 
+  // Stream completado normalmente
+  isStreamActive = false
   clearTimeout(currentRequestTimeout)
 
   metrics.totalTokensIn += state.inputTokens
@@ -562,26 +583,45 @@ function releaseBuffer(chunks: Buffer[]): void {
   }
 }
 
+const MAX_BODY_SIZE = parseInt(process.env.MAX_BODY_SIZE || String(10 * 1024 * 1024), 10) // 10 MB default
+
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks = acquireBuffer() // Reutiliza array del pool
+    let totalSize = 0
+
+    const cleanup = () => {
+      req.removeListener('data', onData)
+      req.removeListener('end', onEnd)
+      req.removeListener('error', onError)
+    }
 
     const onData = (chunk: Buffer) => {
+      totalSize += chunk.length
+      if (totalSize > MAX_BODY_SIZE) {
+        cleanup()
+        releaseBuffer(chunks)
+        req.destroy()
+        reject(new Error(`Request body too large (>${MAX_BODY_SIZE} bytes)`))
+        return
+      }
       chunks.push(chunk)
     }
 
     const onEnd = () => {
+      cleanup()
       try {
         const result = Buffer.concat(chunks).toString('utf8')
         releaseBuffer(chunks) // Devuelve al pool
         resolve(result)
       } catch (err) {
-        releaseBuffer(chunks)
+     releaseBuffer(chunks)
         reject(err)
       }
     }
 
     const onError = (err: Error) => {
+      cleanup()
       releaseBuffer(chunks)
       reject(err)
     }
@@ -641,8 +681,6 @@ server.on('error', (err) => {
 // ==========================================================
 // Graceful shutdown
 // ==========================================================
-
-const SHUTDOWN_TIMEOUT_MS = parseInt(process.env.SHUTDOWN_TIMEOUT_MS || '30000', 10)
 
 function shutdown(signal: string): void {
   asyncLog(`\n🛑 ${signal} recibido — iniciando graceful shutdown...`)
