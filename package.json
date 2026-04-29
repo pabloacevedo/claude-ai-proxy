@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "dev:nvidia": "TARGET_API_KEY=$NVIDIA_API_KEY TARGET_MODEL=meta/llama-3.1-8b-instruct TARGET_BASE_URL=https://integrate.api.nvidia.com npm run dev",
+    "dev:openrouter": "TARGET_API_KEY=$OPENROUTER_API_KEY TARGET_MODEL=google/gemini-2.5-pro TARGET_BASE_URL=https://openrouter.ai/api npm run dev",
+    "dev:openai": "TARGET_API_KEY=$OPENAI_API_KEY TARGET_MODEL=gpt-4o TARGET_BASE_URL=https://api.openai.com npm run dev"
   },
   "dependencies": {
     "eventsource-parser": "^3.0.0",

@@ -2,7 +2,7 @@
 
 Proxy HTTP en TypeScript que traduce peticiones del formato **Anthropic Messages API** al formato **OpenAI Chat Completions API** y viceversa.
 
-Esto permite usar **cualquier modelo compatible con la API de OpenAI** (GPT-4o, Gemini, Llama, Mistral, DeepSeek, modelos locales con Ollama, etc.) directamente desde **Claude Code**.
+Esto permite usar **cualquier modelo compatible con la API de OpenAI** (NVIDIA NIM, GPT-4o, Gemini, Llama, Mistral, DeepSeek, modelos locales con Ollama, etc.) directamente desde **Claude Code**.
 
 ## 📁 Estructura
 
@@ -83,6 +83,25 @@ TARGET_MODEL=google/gemini-2.5-pro \
 TARGET_BASE_URL=https://openrouter.ai/api \
 npm run dev
 ```
+
+### Con NVIDIA NIM (NVIDIA Inference Microservices)
+
+```bash
+# Obtén tu API key en: https://build.nvidia.com/
+TARGET_API_KEY=nvapi-tu-api-key-aqui \
+TARGET_MODEL=meta/llama-3.1-8b-instruct \
+TARGET_BASE_URL=https://integrate.api.nvidia.com \
+npm run dev
+```
+
+**Modelos populares de NVIDIA:**
+- `meta/llama-3.1-8b-instruct` - Llama 3.1 8B
+- `meta/llama-3.1-70b-instruct` - Llama 3.1 70B
+- `nvidia/llama-3.1-nemotron-70b-instruct` - Nemotron 70B
+- `google/gemma-2-27b-it` - Gemma 2 27B
+- `mistralai/mistral-7b-instruct-v0.3` - Mistral 7B
+
+Ver todos los modelos disponibles en: https://api.nvidia.com/v1/models
 
 ## 🔗 Conectar con Claude Code
 
