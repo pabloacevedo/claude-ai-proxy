@@ -2,10 +2,9 @@
  * Traductor de Request: Anthropic Messages API → OpenAI Chat Completions API
  *
  * Convierte el formato de petición de Anthropic al formato de OpenAI,
- * incluyendo system prompts, mensajes, tools y configuración de streaming.
+ * preservando el orden original de los bloques de contenido.
  */
 
-import { mapModel } from '../config.js'
 import type {
   AnthropicContentBlock,
   AnthropicMessage,
@@ -24,38 +23,31 @@ import type {
 
 export function translateRequest(
   anthropicReq: AnthropicRequest,
-  defaultModel: string,
+  targetModel: string,
 ): OpenAIRequest {
   const openaiMessages: OpenAIMessage[] = []
 
-  // 1. Traducir system prompt
   const systemText = extractSystemText(anthropicReq.system)
   if (systemText) {
     openaiMessages.push({ role: 'system', content: systemText })
   }
 
-  // 2. Traducir mensajes
   for (const msg of anthropicReq.messages) {
     const translated = translateMessage(msg)
     openaiMessages.push(...translated)
   }
 
-  // 3. Traducir tools
   const tools = translateTools(anthropicReq.tools)
-
-  // 4. Traducir tool_choice
   const toolChoice = translateToolChoice(anthropicReq.tool_choice)
 
-  // 5. Construir request OpenAI
   const openaiReq: OpenAIRequest = {
-    model: mapModel(anthropicReq.model, defaultModel),
+    model: targetModel,
     messages: openaiMessages,
     temperature: anthropicReq.temperature,
     top_p: anthropicReq.top_p,
     stream: anthropicReq.stream,
   }
 
-  // max_tokens: OpenAI usa max_completion_tokens para modelos nuevos
   if (anthropicReq.max_tokens) {
     openaiReq.max_completion_tokens = anthropicReq.max_tokens
   }
@@ -72,7 +64,6 @@ export function translateRequest(
     openaiReq.tool_choice = toolChoice
   }
 
-  // Si es streaming, pedir usage en el último chunk
   if (anthropicReq.stream) {
     openaiReq.stream_options = { include_usage: true }
   }
@@ -80,16 +71,9 @@ export function translateRequest(
   return openaiReq
 }
 
-// ==========================================================
-// Helpers
-// ========================================
-
-function extractSystemText(
-  system: AnthropicRequest['system'],
-): string | null {
+function extractSystemText(system: AnthropicRequest['system']): string | null {
   if (!system) return null
   if (typeof system === 'string') return system
-  // Array de bloques de sistema
   return (system as AnthropicSystemBlock[])
     .filter((b) => b.type === 'text')
     .map((b) => b.text)
@@ -97,11 +81,13 @@ function extractSystemText(
 }
 
 /**
- * Traduce un mensaje Anthropic a uno o más mensajes OpenAI.
- * Un solo mensaje Anthropic con tool_use + text puede generar múltiples mensajes OpenAI.
+ * Traduce un mensaje Anthropic preservando el orden de los bloques.
+ *
+ * Para mensajes de usuario con tool_results intercalados, generamos
+ * múltiples mensajes en el mismo orden: por ejemplo
+ *   [text, tool_result, text] → [user(text), tool, user(text)]
  */
 function translateMessage(msg: AnthropicMessage): OpenAIMessage[] {
-  // Contenido simple (string)
   if (typeof msg.content === 'string') {
     if (msg.role === 'user') {
       return [{ role: 'user', content: msg.content }]
@@ -109,72 +95,67 @@ function translateMessage(msg: AnthropicMessage): OpenAIMessage[] {
     return [{ role: 'assistant', content: msg.content }]
   }
 
-  // Contenido como array de bloques
   const blocks = msg.content as AnthropicContentBlock[]
 
   if (msg.role === 'user') {
-    return translateUserBlocks(blocks)
+    return translateUserBlocksOrdered(blocks)
   }
-
   return translateAssistantBlocks(blocks)
 }
 
-function translateUserBlocks(blocks: AnthropicContentBlock[]): OpenAIMessage[] {
+function translateUserBlocksOrdered(blocks: AnthropicContentBlock[]): OpenAIMessage[] {
   const messages: OpenAIMessage[] = []
+  let pendingParts: OpenAIContentPart[] = []
 
-  // Separar tool_results de contenido normal
-  const toolResults = blocks.filter((b) => b.type === 'tool_result')
-  const otherBlocks = blocks.filter((b) => b.type !== 'tool_result')
-
-  // Primero los tool_results (van como mensajes role: "tool")
-  for (const block of toolResults) {
-    if (block.type !== 'tool_result') continue
-    const content = typeof block.content === 'string'
-      ? block.content
-      : Array.isArray(block.content)
-        ? block.content
-            .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-            .map((b) => b.text)
-            .join('\n')
-        : ''
-
-    const toolMsg: OpenAIToolMessage = {
-      role: 'tool',
-      tool_call_id: block.tool_use_id,
-      content: block.is_error ? `[ERROR] ${content}` : content,
+  const flushUserParts = (): void => {
+    if (pendingParts.length === 0) return
+    const userMsg: OpenAIUserMessage = {
+      role: 'user',
+      content:
+        pendingParts.length === 1 && pendingParts[0]!.type === 'text'
+          ? pendingParts[0]!.text!
+          : pendingParts,
     }
-    messages.push(toolMsg)
+    messages.push(userMsg)
+    pendingParts = []
   }
 
-  // Luego el contenido normal del usuario
-  if (otherBlocks.length > 0) {
-    const parts: OpenAIContentPart[] = []
-
-    for (const block of otherBlocks) {
-      if (block.type === 'text') {
-        parts.push({ type: 'text', text: block.text })
-      } else if (block.type === 'image') {
-        parts.push({
-          type: 'image_url',
-          image_url: {
-            url: `data:${block.source.media_type};base64,${block.source.data}`,
-          },
-        })
+  for (const block of blocks) {
+    if (block.type === 'tool_result') {
+      // Antes de un tool_result, cierra cualquier contenido de usuario pendiente
+      flushUserParts()
+      const content = extractToolResultContent(block.content)
+      const toolMsg: OpenAIToolMessage = {
+        role: 'tool',
+        tool_call_id: block.tool_use_id,
+        content: block.is_error ? `[ERROR] ${content}` : content,
       }
-    }
-
-    if (parts.length > 0) {
-      const userMsg: OpenAIUserMessage = {
-        role: 'user',
-        content: parts.length === 1 && parts[0]!.type === 'text'
-          ? parts[0]!.text!
-          : parts,
-      }
-      messages.push(userMsg)
+      messages.push(toolMsg)
+    } else if (block.type === 'text') {
+      pendingParts.push({ type: 'text', text: block.text })
+    } else if (block.type === 'image') {
+      // Defensa runtime: el body viene del cliente y aunque pase el validador,
+      // el shape de `source` puede ser inválido (provider raro, contenido truncado).
+      const src = block.source
+      if (!src || typeof src !== 'object' || !src.media_type || !src.data) continue
+      pendingParts.push({
+        type: 'image_url',
+        image_url: { url: `data:${src.media_type};base64,${src.data}` },
+      })
     }
   }
 
+  flushUserParts()
   return messages
+}
+
+function extractToolResultContent(content: AnthropicContentBlock[] | string | undefined): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+    .map((b) => b.text)
+    .join('\n')
 }
 
 function translateAssistantBlocks(blocks: AnthropicContentBlock[]): OpenAIMessage[] {
@@ -185,7 +166,6 @@ function translateAssistantBlocks(blocks: AnthropicContentBlock[]): OpenAIMessag
     if (block.type === 'text') {
       textParts.push(block.text)
     } else if (block.type === 'thinking') {
-      // Incluir thinking como texto entre tags para modelos que no lo soportan
       textParts.push(`<thinking>\n${block.thinking}\n</thinking>`)
     } else if (block.type === 'tool_use') {
       toolCalls.push({
@@ -211,11 +191,8 @@ function translateAssistantBlocks(blocks: AnthropicContentBlock[]): OpenAIMessag
   return [assistantMsg]
 }
 
-function translateTools(
-  tools: AnthropicRequest['tools'],
-): OpenAITool[] | undefined {
+function translateTools(tools: AnthropicRequest['tools']): OpenAITool[] | undefined {
   if (!tools || tools.length === 0) return undefined
-
   return tools.map((tool) => ({
     type: 'function' as const,
     function: {
@@ -230,7 +207,6 @@ function translateToolChoice(
   choice: AnthropicToolChoice | undefined,
 ): OpenAIRequest['tool_choice'] | undefined {
   if (!choice) return undefined
-
   switch (choice.type) {
     case 'auto':
       return 'auto'

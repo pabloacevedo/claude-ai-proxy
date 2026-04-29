@@ -152,12 +152,12 @@ async function processToolCallDelta(
     })
   } else {
     const existing = state.activeToolCalls.get(tcIndex)!
+    // id y name vienen una sola vez (en el primer chunk con tool_call). Si el
+    // provider los reenvía, los ignoramos para no duplicar (e.g. "search" + "search").
     if (tc.id && !existing.id) existing.id = tc.id
-    if (tc.function?.name) existing.name += tc.function.name
-    if (tc.function?.arguments) {
-      if (!existing.headerSent) {
-        existing.pendingArguments += tc.function.arguments
-      }
+    if (tc.function?.name && !existing.name) existing.name = tc.function.name
+    if (tc.function?.arguments && !existing.headerSent) {
+      existing.pendingArguments += tc.function.arguments
     }
   }
 

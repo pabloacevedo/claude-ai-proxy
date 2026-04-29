@@ -9,13 +9,37 @@ Esto permite usar **cualquier modelo compatible con la API de OpenAI** (NVIDIA N
 ```
 ai-proxy/
 ├── src/
-│   ├── server.ts                   # Servidor HTTP principal
-│   ├── config.ts                          # Configuración y mapeo de modelos
-│   ├── types.ts                       # Tipos Anthropic + OpenAI
+│   ├── server.ts                   # Entry point: routing + lifecycle
+│   ├── types.ts                    # Tipos Anthropic + OpenAI
+│   ├── config/
+│   │   ├── index.ts                # Carga ProxyConfig desde .env
+│   │   └── providers.ts            # Routing multi-proveedor + MODEL_MAP
+│   ├── lib/
+│   │   ├── logger.ts               # Logger estructurado JSON/pretty
+│   │   ├── sanitizer.ts            # Redacta API keys en logs
+│   │   ├── retry.ts                # Backoff exponencial con jitter
+│   │   ├── httpClient.ts           # undici Agent/Pool dispatcher
+│   │   ├── cache.ts                # LRU cache + hashRequest
+│   │   └── bufferPool.ts           # Pool de buffers para reducir GC
+│   ├── middleware/
+│   │   ├── rateLimit.ts            # Rate limit por IP
+│   │   ├── metrics.ts              # Métricas con percentiles
+│   │   ├── cors.ts                 # CORS con allowlist
+│   │   └── requestId.ts            # IDs correlación de logs
+│   ├── handlers/
+│   │   ├── messages.ts             # POST /v1/messages
+│   │   ├── health.ts               # GET /health
+│   │   └── metrics.ts              # GET /metrics
+│   ├── validators/
+│   │   └── anthropicRequest.ts     # Validación zero-dep del body
 │   └── translators/
-│       ├── requestTranslator.ts           # Anthropic → OpenAI (request)
-│       ├── responseTranslator.ts          # OpenAI → Anthropic (response)
-│       └── streamTranslator.ts            # Streaming SSE OpenAI → Anthropic
+│       ├── requestTranslator.ts    # Anthropic → OpenAI (request)
+│       ├── responseTranslator.ts   # OpenAI → Anthropic (response)
+│       └── streamTranslator.ts     # SSE OpenAI → SSE Anthropic
+├── tests/                          # node:test (65 tests)
+├── .github/workflows/ci.yml        # GitHub Actions CI
+├── eslint.config.js
+├── .prettierrc.json
 ├── package.json
 ├── tsconfig.json
 └── README.md
@@ -115,13 +139,38 @@ export ANTHROPIC_BASE_URL=http://localhost:8082
 
 ## ⚙️ Variables de entorno
 
+### Proveedor por defecto
 | Variable | Default | Descripción |
 |---|---|---|
 | `TARGET_API_KEY` | *(requerida)* | API key del proveedor destino |
-| `TARGET_MODEL` | `gpt-4o` | Modelo a usar en el proveedor destino |
-| `TARGET_BASE_URL` | `https://api.openai.com` | URL base del proveedor destino |
-| `PROXY_PORT` | `8082` | Puerto donde escucha el proxy |
-| `LOG_REQUESTS` | `false` | Loguear peticiones y respuestas |
+| `TARGET_MODEL` | `gpt-4o` | Modelo a usar |
+| `TARGET_BASE_URL` | `https://api.openai.com` | URL base del proveedor |
+| `TARGET_PASSTHROUGH` | *(auto)* | Si el endpoint habla nativo Anthropic, no traduce. Auto-detectado por host |
+| `PROXY_PORT` | `8082` | Puerto del proxy |
+
+### Logging
+| Variable | Default | Descripción |
+|---|---|---|
+| `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
+| `LOG_FORMAT` | `pretty` | `pretty` (color, dev) o `json` (prod) |
+| `LOG_REDACT` | `true` | Redactar API keys en logs |
+
+### Routing avanzado
+| Variable | Descripción |
+|---|---|
+| `MODEL_MAP_JSON` | Alias simple: `{"claude-opus-4-20250514":"gpt-4-turbo"}` |
+| `PROVIDERS_JSON` | Routing por modelo a providers distintos (ver `.env.example`) |
+
+### Rate limiting, CORS, cache, retry
+Ver `.env.example` para la lista completa con defaults y comentarios.
+
+## 📊 Endpoints
+
+| Endpoint | Descripción |
+|---|---|
+| `POST /v1/messages` | Endpoint principal compatible con Anthropic Messages API |
+| `GET /health` | Health check con uptime y versión |
+| `GET /metrics` | Métricas en texto plano. `Accept: application/json` para JSON |
 
 ## 🔄 ¿Qué traduce?
 
@@ -151,24 +200,47 @@ export ANTHROPIC_BASE_URL=http://localhost:8082
 ## 🛠️ Desarrollo
 
 ```bash
-# Modo desarrollo con hot-reload
-npm run dev
-
-# Compilar a JavaScript
-npm run build
-
-# Ejecutar compilado
-npm start
+npm run dev              # Hot-reload con tsx watch
+npm run build            # Compila a dist/
+npm start                # Ejecuta el build
+npm test                 # Tests con node:test
+npm run typecheck        # tsc --noEmit
+npm run lint             # ESLint
+npm run format           # Prettier write
+npm run format:check     # Prettier check
 ```
 
 ## 📝 Personalizar mapeo de modelos
 
-Edita `src/config.ts` para mapear modelos específicos de Anthropic a modelos del proveedor destino:
+Hay tres niveles, de más simple a más avanzado:
 
-```typescript
-const MODEL_MAP: Record<string, string> = {
-  'claude-sonnet-4-20250514': 'gpt-4o',
-  'claude-opus-4-20250514': 'gpt-4o',
-  'claude-3-5-haiku-20241022': 'gpt-4o-mini',
-}
+**1. Provider único (`.env`)** — todos los modelos van al mismo proveedor:
+```bash
+TARGET_BASE_URL=https://api.openai.com
+TARGET_MODEL=gpt-4o
 ```
+
+**2. Alias por modelo (`MODEL_MAP_JSON`)** — mismo provider, distinto modelo:
+```bash
+MODEL_MAP_JSON='{"claude-opus-4-20250514":"gpt-4-turbo","claude-3-5-haiku-20241022":"gpt-4o-mini"}'
+```
+
+**3. Routing por modelo a providers distintos (`PROVIDERS_JSON`)**:
+```bash
+PROVIDERS_JSON='{
+  "claude-opus-4-20250514": {
+    "name": "nvidia",
+    "baseUrl": "https://integrate.api.nvidia.com",
+    "apiKey": "nvapi-xxx",
+    "model": "meta/llama-3.1-70b-instruct"
+  },
+  "claude-3-5-haiku-20241022": {
+    "name": "groq",
+    "baseUrl": "https://api.groq.com/openai",
+    "apiKey": "gsk-xxx",
+    "model": "llama-3.3-70b-versatile"
+  }
+}'
+```
+
+Si el `baseUrl` apunta a `api.anthropic.com`, el proxy detecta automáticamente passthrough (sin traducción).

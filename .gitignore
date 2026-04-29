@@ -33,7 +33,6 @@ Thumbs.db
 coverage/
 .nyc_output/
 
-# Lock files (paquete manager agnostic)
-package-lock.json
+# Lock files alternativos (usamos package-lock.json)
 yarn.lock
 pnpm-lock.yaml

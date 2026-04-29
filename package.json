@@ -4,20 +4,32 @@
   "description": "Proxy que traduce peticiones Anthropic Messages API a OpenAI Chat Completions API y viceversa",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "npm test && tsx watch src/server.ts",
+    "dev:fast": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/**/*.test.ts",
+    "test:watch": "node --import tsx --test --watch tests/**/*.test.ts",
+    "lint": "eslint src tests",
+    "lint:fix": "eslint src tests --fix",
+    "format": "prettier --write \"{src,tests}/**/*.{ts,json,md}\"",
+    "format:check": "prettier --check \"{src,tests}/**/*.{ts,json,md}\"",
     "dev:nvidia": "TARGET_API_KEY=$NVIDIA_API_KEY TARGET_MODEL=meta/llama-3.1-8b-instruct TARGET_BASE_URL=https://integrate.api.nvidia.com npm run dev",
     "dev:openrouter": "TARGET_API_KEY=$OPENROUTER_API_KEY TARGET_MODEL=google/gemini-2.5-pro TARGET_BASE_URL=https://openrouter.ai/api npm run dev",
     "dev:openai": "TARGET_API_KEY=$OPENAI_API_KEY TARGET_MODEL=gpt-4o TARGET_BASE_URL=https://api.openai.com npm run dev"
   },
   "dependencies": {
-    "eventsource-parser": "^3.0.0",
     "undici": "^6.25.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^22.0.0",
+    "eslint": "^10.2.1",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.8.3",
     "tsx": "^4.19.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.59.1"
   }
 }

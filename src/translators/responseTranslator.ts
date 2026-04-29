@@ -42,10 +42,7 @@ export function translateResponse(
   }
 
   // 3. Traducir finish_reason → stop_reason
-  const stopReason = translateFinishReason(
-    choice.finish_reason,
-    choice.message.tool_calls,
-  )
+  const stopReason = translateFinishReason(choice.finish_reason, choice.message.tool_calls)
 
   return {
     id: `msg_${openaiResp.id || randomUUID()}`,
@@ -62,9 +59,8 @@ export function translateResponse(
   }
 }
 
-
 function translateToolCall(tc: OpenAIToolCall): AnthropicResponseBlock {
-  let input: Record<string, unknown> = {}
+  let input: Record<string, unknown>
   try {
     input = JSON.parse(tc.function.arguments)
   } catch {
@@ -99,10 +95,7 @@ function translateFinishReason(
   }
 }
 
-export function buildErrorResponse(
-  model: string,
-  errorMessage: string,
-): AnthropicResponse {
+export function buildErrorResponse(model: string, errorMessage: string): AnthropicResponse {
   return {
     id: `msg_${randomUUID()}`,
     type: 'message',
