@@ -33,6 +33,9 @@ Thumbs.db
 coverage/
 .nyc_output/
 
+# Claude local context
+CLAUDE.md
+
 # Lock files alternativos (usamos package-lock.json)
 yarn.lock
 pnpm-lock.yaml

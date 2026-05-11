@@ -182,7 +182,29 @@ async function sendToProvider(args: {
       clearTimeout(connTimer)
 
       if (targetRes.statusCode >= 400) {
-        const errorBody = await targetRes.body.text()
+        // Lee el body como buffer primero para manejar posibles respuestas comprimidas
+        const errorBuffer = await targetRes.body.arrayBuffer()
+        const bufferBytes = errorBuffer instanceof Uint8Array ? errorBuffer : new Uint8Array(errorBuffer)
+
+        // Detecta si la respuesta está comprimida (gzip: 0x1f 0x8b, br: 'BR' en header)
+        const isGzip = bufferBytes.length >= 2 && bufferBytes[0] === 0x1f && bufferBytes[1] === 0x8b
+        const isBrotli = bufferBytes.length >= 4 &&
+          String.fromCharCode(bufferBytes[0], bufferBytes[1], bufferBytes[2], bufferBytes[3]) === 'BR'
+
+        let errorBody: string
+        if (isGzip || isBrotli) {
+          // La respuesta está comprimida, no podemos decodificarla fácilmente
+          errorBody = `[Compressed error response] ${isGzip ? 'gzip' : 'brotli'} (${bufferBytes.length} bytes)`
+        } else {
+          // Intenta decodificar como UTF-8
+          errorBody = new TextDecoder('utf-8', { fatal: false }).decode(bufferBytes)
+          // Si la decodificación produce caracteres de control binarios, marca como binario
+          // eslint-disable-next-line no-control-regex
+          const hasBinaryChars = /[\x00-\x08\x0B-\x1F\x7F]/.test(errorBody)
+          if (errorBody.charCodeAt(0) > 127 && hasBinaryChars) {
+            errorBody = `[Binary error response] (${bufferBytes.length} bytes)`
+          }
+        }
         lastError = new Error(`Provider ${targetRes.statusCode}: ${errorBody}`)
 
         if (shouldRetry(targetRes.statusCode, lastError) && attempt < retryOptions.maxRetries) {
@@ -288,11 +310,12 @@ async function handleNormalResponse(
     openaiResp = JSON.parse(body)
   } catch {
     metrics.recordError('parse_error')
-    sendJson(
-      res,
-      502,
-      buildErrorResponse(requestModel, `Invalid JSON from provider: ${body.slice(0, 200)}`),
-    )
+    // Si el body parece binario/comprimido, informa mejor el error
+    const isBinary = body.charCodeAt(0) > 127
+    const errorMsg = isBinary
+      ? `Invalid response from provider (possibly compressed): ${body.slice(0, 50)}...`
+      : `Invalid JSON from provider: ${body.slice(0, 200)}`
+    sendJson(res, 502, buildErrorResponse(requestModel, errorMsg))
     return
   }
 

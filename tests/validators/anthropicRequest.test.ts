@@ -121,6 +121,57 @@ describe('validateAnthropicRequest', () => {
     assert.equal(result.ok, false)
   })
 
+  it('rejects image block with wrong source.type', () => {
+    const result = validateAnthropicRequest({
+      model: 'x',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'url', media_type: 'image/png', data: 'abc' } },
+          ],
+        },
+      ],
+      max_tokens: 100,
+    })
+    assert.equal(result.ok, false)
+    assert.ok((result as { error: string }).error.includes('source.type="base64"'))
+  })
+
+  it('rejects image block without source.type', () => {
+    const result = validateAnthropicRequest({
+      model: 'x',
+      messages: [
+        {
+          role: 'user',
+          content: [{ type: 'image', source: { media_type: 'image/png', data: 'abc' } }],
+        },
+      ],
+      max_tokens: 100,
+    })
+    assert.equal(result.ok, false)
+  })
+
+  it('accepts image block with cache_control', () => {
+    const result = validateAnthropicRequest({
+      model: 'x',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/png', data: 'abc' },
+              cache_control: { type: 'ephemeral' },
+            },
+          ],
+        },
+      ],
+      max_tokens: 100,
+    })
+    assert.equal(result.ok, true)
+  })
+
   it('rejects tool_use without id or name', () => {
     const result = validateAnthropicRequest({
       model: 'x',

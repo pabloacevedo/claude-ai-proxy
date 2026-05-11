@@ -161,4 +161,29 @@ describe('translateRequest', () => {
     }
     assert.equal(userMsg.content[0]!.image_url!.url, 'data:image/png;base64,ABC')
   })
+
+  it('handles image blocks with cache_control', () => {
+    const req: AnthropicRequest = {
+      model: 'x',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/png', data: 'ABC' },
+              cache_control: { type: 'ephemeral' },
+            },
+          ],
+        },
+      ],
+      max_tokens: 100,
+    }
+    const out = translateRequest(req, 'gpt-4o')
+    const userMsg = out.messages[0] as {
+      content: Array<{ type: string; image_url?: { url: string } }>
+    }
+    // cache_control de Anthropic no se traduce a OpenAI (no existe en la especificación OpenAI)
+    assert.equal(userMsg.content[0]!.image_url!.url, 'data:image/png;base64,ABC')
+  })
 })

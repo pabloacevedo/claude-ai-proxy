@@ -60,12 +60,13 @@ export function validateAnthropicRequest(input: unknown): ValidationResult {
           const src = block.source
           if (
             !isPlainObject(src) ||
+            src.type !== 'base64' ||
             typeof src.media_type !== 'string' ||
             typeof src.data !== 'string'
           ) {
             return {
               ok: false,
-              error: `messages[${i}].content[${j}] image block requires source.media_type and source.data`,
+              error: `messages[${i}].content[${j}] image block requires source.type="base64", source.media_type and source.data`,
             }
           }
         }

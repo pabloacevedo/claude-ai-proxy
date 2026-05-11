@@ -49,6 +49,7 @@ export interface AnthropicImageBlock {
     media_type: string
     data: string
   }
+  cache_control?: { type: 'ephemeral' }
 }
 
 export interface AnthropicToolUseBlock {
