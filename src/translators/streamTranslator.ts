@@ -24,6 +24,8 @@ interface StreamState {
   model: string
   nextBlockIndex: number
   activeToolCalls: Map<number, ToolCallState>
+  thinkingBlockOpen: boolean
+  thinkingBlockIndex: number
   textBlockOpen: boolean
   textBlockIndex: number
   inputTokens: number
@@ -38,6 +40,8 @@ export function createStreamState(model: string): StreamState {
     model,
     nextBlockIndex: 0,
     activeToolCalls: new Map(),
+    thinkingBlockOpen: false,
+    thinkingBlockIndex: -1,
     textBlockOpen: false,
     textBlockIndex: -1,
     inputTokens: 0,
@@ -81,8 +85,32 @@ export async function processStreamChunk(
 
   const delta = choice.delta
 
+  // --- Reasoning (thinking mode) ---
+  // Algunos providers OpenAI-compatibles emiten el razonamiento como
+  // delta.reasoning_content antes del contenido de texto. Lo traducimos a
+  // bloques `thinking` de Anthropic para que el cliente lo reciba y pueda
+  // reenviarlo en turnos posteriores (los providers lo exigen).
+  if (
+    delta.reasoning_content !== undefined &&
+    delta.reasoning_content !== null &&
+    delta.reasoning_content.length > 0
+  ) {
+    if (!state.thinkingBlockOpen) {
+      await openThinkingBlock(res, state)
+    }
+    await writeSSE(res, 'content_block_delta', {
+      type: 'content_block_delta',
+      index: state.thinkingBlockIndex,
+      delta: { type: 'thinking_delta', thinking: delta.reasoning_content },
+    })
+  }
+
   // --- Contenido de texto ---
   if (delta.content !== undefined && delta.content !== null && delta.content.length > 0) {
+    // Cerrar thinking antes de abrir texto
+    if (state.thinkingBlockOpen) {
+      await closeThinkingBlock(res, state)
+    }
     if (!state.textBlockOpen) {
       await openTextBlock(res, state)
     }
@@ -95,7 +123,10 @@ export async function processStreamChunk(
 
   // --- Tool calls ---
   if (delta.tool_calls?.length) {
-    // Cerrar texto antes de tools
+    // Cerrar thinking y texto antes de tools
+    if (state.thinkingBlockOpen) {
+      await closeThinkingBlock(res, state)
+    }
     if (state.textBlockOpen) {
       await closeTextBlock(res, state)
     }
@@ -129,6 +160,27 @@ async function closeTextBlock(res: ServerResponse, state: StreamState): Promise<
     index: state.textBlockIndex,
   })
   state.textBlockOpen = false
+}
+
+async function openThinkingBlock(res: ServerResponse, state: StreamState): Promise<void> {
+  state.thinkingBlockIndex = state.nextBlockIndex
+  state.nextBlockIndex++
+  state.thinkingBlockOpen = true
+  state.hasContent = true
+  await writeSSE(res, 'content_block_start', {
+    type: 'content_block_start',
+    index: state.thinkingBlockIndex,
+    content_block: { type: 'thinking', thinking: '' },
+  })
+}
+
+async function closeThinkingBlock(res: ServerResponse, state: StreamState): Promise<void> {
+  if (!state.thinkingBlockOpen) return
+  await writeSSE(res, 'content_block_stop', {
+    type: 'content_block_stop',
+    index: state.thinkingBlockIndex,
+  })
+  state.thinkingBlockOpen = false
 }
 
 async function processToolCallDelta(
@@ -214,7 +266,8 @@ async function finishStream(
   if (state.finished) return
   state.finished = true
 
-  // 1. Cerrar texto abierto
+  // 1. Cerrar thinking y texto abiertos
+  await closeThinkingBlock(res, state)
   await closeTextBlock(res, state)
 
   // 2. Cerrar todos los tool calls abiertos

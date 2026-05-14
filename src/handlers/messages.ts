@@ -11,6 +11,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { gunzipSync, brotliDecompressSync } from 'node:zlib'
 import type { Dispatcher } from 'undici'
 import type { ProxyConfig } from '../config/index.js'
 import type { ProviderConfig } from '../config/providers.js'
@@ -173,7 +174,6 @@ async function sendToProvider(args: {
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${provider.apiKey}`,
-          'Accept-Encoding': 'gzip, br',
         },
         body: JSON.stringify(openaiReq),
         signal: ac.signal,
@@ -193,8 +193,15 @@ async function sendToProvider(args: {
 
         let errorBody: string
         if (isGzip || isBrotli) {
-          // La respuesta está comprimida, no podemos decodificarla fácilmente
-          errorBody = `[Compressed error response] ${isGzip ? 'gzip' : 'brotli'} (${bufferBytes.length} bytes)`
+          // Descomprimir la respuesta
+          try {
+            const decompressed = isGzip
+              ? gunzipSync(bufferBytes)
+              : brotliDecompressSync(bufferBytes)
+            errorBody = new TextDecoder('utf-8', { fatal: false }).decode(decompressed)
+          } catch (decompressErr) {
+            errorBody = `[Failed to decompress ${isGzip ? 'gzip' : 'brotli'} response] (${bufferBytes.length} bytes)`
+          }
         } else {
           // Intenta decodificar como UTF-8
           errorBody = new TextDecoder('utf-8', { fatal: false }).decode(bufferBytes)

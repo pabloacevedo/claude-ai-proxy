@@ -160,13 +160,14 @@ function extractToolResultContent(content: AnthropicContentBlock[] | string | un
 
 function translateAssistantBlocks(blocks: AnthropicContentBlock[]): OpenAIMessage[] {
   const textParts: string[] = []
+  const thinkingParts: string[] = []
   const toolCalls: OpenAIToolCall[] = []
 
   for (const block of blocks) {
     if (block.type === 'text') {
       textParts.push(block.text)
     } else if (block.type === 'thinking') {
-      textParts.push(`<thinking>\n${block.thinking}\n</thinking>`)
+      thinkingParts.push(block.thinking)
     } else if (block.type === 'tool_use') {
       toolCalls.push({
         id: block.id,
@@ -182,6 +183,12 @@ function translateAssistantBlocks(blocks: AnthropicContentBlock[]): OpenAIMessag
   const assistantMsg: OpenAIAssistantMessage = {
     role: 'assistant',
     content: textParts.length > 0 ? textParts.join('\n') : null,
+  }
+
+  // Algunos providers (DeepSeek/Qwen/MiniMax) requieren que reasoning_content
+  // se reenvíe tal cual en turnos siguientes cuando se usó thinking mode.
+  if (thinkingParts.length > 0) {
+    assistantMsg.reasoning_content = thinkingParts.join('\n')
   }
 
   if (toolCalls.length > 0) {

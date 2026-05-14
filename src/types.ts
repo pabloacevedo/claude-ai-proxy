@@ -141,6 +141,7 @@ export interface OpenAIUserMessage {
 export interface OpenAIAssistantMessage {
   role: 'assistant'
   content?: string | null
+  reasoning_content?: string | null
   tool_calls?: OpenAIToolCall[]
 }
 
@@ -192,6 +193,7 @@ export interface OpenAIChoice {
   message: {
     role: 'assistant'
     content?: string | null
+    reasoning_content?: string | null
     tool_calls?: OpenAIToolCall[]
   }
   finish_reason: 'stop' | 'length' | 'tool_calls' | 'content_filter' | null
@@ -215,6 +217,7 @@ export interface OpenAIStreamChoice {
   delta: {
     role?: 'assistant'
     content?: string | null
+    reasoning_content?: string | null
     tool_calls?: OpenAIStreamToolCall[]
   }
   finish_reason: 'stop' | 'length' | 'tool_calls' | 'content_filter' | null

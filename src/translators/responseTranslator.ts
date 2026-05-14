@@ -24,12 +24,20 @@ export function translateResponse(
 
   const content: AnthropicResponseBlock[] = []
 
-  // 1. Traducir contenido de texto
+  // 1. Traducir reasoning_content (thinking mode) → thinking block.
+  //    Algunos proveedores OpenAI-compatibles (DeepSeek, Qwen, MiniMax) devuelven
+  //    el razonamiento aquí; debe preservarse para poder reenviarlo en turnos
+  //    posteriores, ya que esos providers lo exigen.
+  if (choice.message.reasoning_content) {
+    content.push({ type: 'thinking', thinking: choice.message.reasoning_content })
+  }
+
+  // 2. Traducir contenido de texto
   if (choice.message.content) {
     content.push({ type: 'text', text: choice.message.content })
   }
 
-  // 2. Traducir tool_calls → tool_use blocks
+  // 3. Traducir tool_calls → tool_use blocks
   if (choice.message.tool_calls?.length) {
     for (const tc of choice.message.tool_calls) {
       content.push(translateToolCall(tc))
